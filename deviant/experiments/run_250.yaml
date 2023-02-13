@@ -4,6 +4,7 @@ dataset:
   type: 'kitti'
   root_dir: 'data/'
   batch_size: 12
+  resolution: [ 1280, 384 ]
   train_split_name: 'trainval'
   val_split_name: 'test'
   class_merging: False
@@ -44,6 +45,6 @@ trainer:
   log_dir: 'output/'
   #resume_model: '...'  
 tester:
-  threshold: 0.2  # confidence filter
+  threshold: 0.05  # confidence filter
   #resume_model: ''  
   

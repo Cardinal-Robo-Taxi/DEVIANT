@@ -24,12 +24,12 @@ WEIGHTS_ZIP_FILE_NAME = WEIGHTS_ZIP_FOLDER_NAME + '.zip'
 WEIGHTS_ZIP_PATH = os.path.join(CACHE_PATH, WEIGHTS_ZIP_FILE_NAME)
 WEIGHTS_FOLDER_PATH = os.path.join(CACHE_PATH, WEIGHTS_ZIP_FOLDER_NAME)
 
-CHECKPOINT_PATH = os.path.join(WEIGHTS_FOLDER_PATH, 'config_run_201_a100_v0_1/checkpoints/checkpoint_epoch_140.pth')
+CHECKPOINT_PATH = os.path.join(WEIGHTS_FOLDER_PATH, 'run_250/checkpoints/checkpoint_epoch_140.pth')
 
 # CONFIG_DOWNLOAD = 'https://raw.githubusercontent.com/Cardinal-Robo-Taxi/DEVIANT/main/code/experiments/config_run_201_a100_v0_1.yaml'
 # WEIGHTS_DOWNLOAD = 'https://drive.google.com/u/0/uc?id=17qezmIjckRSAva1fNnYBmgR9LaY-dPnp&export=download'
 
-CONFIG_DOWNLOAD = "https://raw.githubusercontent.com/Cardinal-Robo-Taxi/DEVIANT/main/code/experiments/run_250.yaml"
+CONFIG_DOWNLOAD = "https://raw.githubusercontent.com/Cardinal-Robo-Taxi/DEVIANT/main/deviant/experiments/run_250.yaml"
 WEIGHTS_DOWNLOAD = "https://drive.google.com/u/0/uc?id=1_79GfHcpAQR3wdvhj9GDHc7_c_ndf1Al&export=download"
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -313,8 +313,8 @@ def main():
     
     transform = transforms.ToTensor()
 
-    # vid_url = "/home/aditya/Videos/Philadelphia.mp4"
-    vid_url = "/home/aditya/Datasets/hadar_car/2023-02-08_15:42:33.822505/rgb_2.mp4"
+    vid_url = "/home/aditya/Videos/Philadelphia.mp4"
+    # vid_url = "/home/aditya/Datasets/hadar_car/2023-02-08_15:42:33.822505/rgb_2.mp4"
 
     cap = cv2.VideoCapture(vid_url)
     ret, frame = cap.read()
