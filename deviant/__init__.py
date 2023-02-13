@@ -16,17 +16,21 @@ from deviant.lib.helpers.util import project_3d, draw_3d_box, draw_bev
 
 
 CACHE_PATH = os.path.expanduser("~/.deviant")
-CONFIG_PATH = os.path.join(CACHE_PATH, 'config_run_201_a100_v0_1.yaml')
-WEIGHTS_ZIP_FOLDER_NAME = 'config_run_201_a100_v0_1'
+# CONFIG_PATH = os.path.join(CACHE_PATH, 'config_run_201_a100_v0_1.yaml')
+CONFIG_PATH = os.path.join(CACHE_PATH, 'run_250.yaml')
+# WEIGHTS_ZIP_FOLDER_NAME = 'config_run_201_a100_v0_1'
+WEIGHTS_ZIP_FOLDER_NAME = 'run_250'
 WEIGHTS_ZIP_FILE_NAME = WEIGHTS_ZIP_FOLDER_NAME + '.zip'
 WEIGHTS_ZIP_PATH = os.path.join(CACHE_PATH, WEIGHTS_ZIP_FILE_NAME)
 WEIGHTS_FOLDER_PATH = os.path.join(CACHE_PATH, WEIGHTS_ZIP_FOLDER_NAME)
 
 CHECKPOINT_PATH = os.path.join(WEIGHTS_FOLDER_PATH, 'config_run_201_a100_v0_1/checkpoints/checkpoint_epoch_140.pth')
 
-CONFIG_DOWNLOAD = 'https://raw.githubusercontent.com/Cardinal-Robo-Taxi/DEVIANT/main/code/experiments/config_run_201_a100_v0_1.yaml'
-# WEIGHTS_DOWNLOAD = 'https://drive.google.com/file/d/17qezmIjckRSAva1fNnYBmgR9LaY-dPnp/view?usp=sharing'
-WEIGHTS_DOWNLOAD = 'https://drive.google.com/u/0/uc?id=17qezmIjckRSAva1fNnYBmgR9LaY-dPnp&export=download'
+# CONFIG_DOWNLOAD = 'https://raw.githubusercontent.com/Cardinal-Robo-Taxi/DEVIANT/main/code/experiments/config_run_201_a100_v0_1.yaml'
+# WEIGHTS_DOWNLOAD = 'https://drive.google.com/u/0/uc?id=17qezmIjckRSAva1fNnYBmgR9LaY-dPnp&export=download'
+
+CONFIG_DOWNLOAD = "https://raw.githubusercontent.com/Cardinal-Robo-Taxi/DEVIANT/main/code/experiments/run_250.yaml"
+WEIGHTS_DOWNLOAD = "https://drive.google.com/u/0/uc?id=1_79GfHcpAQR3wdvhj9GDHc7_c_ndf1Al&export=download"
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -45,7 +49,7 @@ class CustomCalibration(Calibration):
         self.tx = self.P2[0, 3] / (-self.fu)
         self.ty = self.P2[1, 3] / (-self.fv)
 
-def plot_boxes_on_image_and_in_bev(predictions_img, img, plot_color, p2, box_class_list= ["car", "cyclist", "pedestrian"], use_classwise_color= False, show_3d= True, show_bev= False, thickness= 4):
+def plot_boxes_on_image_and_in_bev(predictions_img, img, canvas_bev, plot_color, p2, box_class_list= ["car", "cyclist", "pedestrian"], use_classwise_color= False, show_3d= True, show_bev= True, thickness= 4, bev_scale = 10.0):
     # https://sashamaps.net/docs/resources/20-colors/
     # Some taken from https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/utils/color_map.py#L10
     class_color_map = {'car': (255,51,153),
@@ -111,6 +115,128 @@ def plot_boxes_on_image_and_in_bev(predictions_img, img, plot_color, p2, box_cla
                 if show_bev:
                     draw_bev(canvas_bev, z3d[j], l3d[j], w3d[j], x3d[j], ry3d[j], color= box_plot_color, scale= bev_scale, thickness= thickness, text= None)#str(int(score[j])))
 
+def get_default_cfg():
+    return {
+        'random_seed': 444,
+        'dataset': {
+            'type': 'kitti',
+            'root_dir': 'data/',
+            'train_split_name': 'train',
+            'val_split_name': 'val',
+            'resolution': [1280,384],
+            'eval_dataset': 'kitti',
+            'batch_size': 12,
+            'class_merging': False,
+            'use_dontcare': False,
+            'use_3d_center': True,
+            'writelist': ['Car', 'Pedestrian', 'Cyclist'],
+            'random_flip': 0.5,
+            'random_crop': 0.5,
+            'scale': 0.4,
+            'shift': 0.1
+        },
+        'model': {
+            'type': 'gupnet',
+            'backbone': 'dla34',
+            'neck': 'DLAUp'
+        },
+        'optimizer': {
+            'type': 'adam',
+            'lr': 0.00125,
+            'weight_decay': 1e-05
+        },
+        'lr_scheduler': {
+            'warmup': True,
+            'decay_rate': 0.1,
+            'decay_list': [90, 120]
+        },
+        'trainer': {
+            'max_epoch': 140,
+            'eval_frequency': 20,
+            'save_frequency': 20,
+            'disp_frequency': 20,
+            'log_dir': 'output'
+        },
+        'tester': {'threshold': 0.15}
+    }
+
+class Deviant:
+
+    def __init__(self,
+            cfg = get_default_cfg(),
+            P2 = np.array([
+                [7.215377e+02, 0.000000e+00, 6.095593e+02, 4.485728e+01], 
+                [0.000000e+00, 7.215377e+02, 1.728540e+02, 2.163791e-01], 
+                [0.000000e+00, 0.000000e+00, 1.000000e+00, 2.745884e-03],
+            ]),
+            device=device
+        ):
+        mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
+                                       [1.52563191462 ,1.62856739989, 3.88311640418],
+                                       [1.73698127    ,0.59706367   , 1.76282397   ]])
+
+        
+        self.model = GUPNet(
+            backbone=cfg['model']['backbone'],
+            neck=cfg['model']['neck'], 
+            mean_size=mean_size, 
+            cfg=cfg
+        )
+
+        checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+        self.model.load_state_dict(checkpoint['model_state'])
+
+        self.model = self.model.to(device=device)
+
+        scale = cfg['dataset']['scale']
+        shift = cfg['dataset']['shift']
+        img_size = np.array(list(cfg['dataset']['resolution']) + [3,])
+
+        center = np.array(img_size) / 2
+        crop_size = img_size
+        
+        coord_range = np.array([center-crop_size/2,center+crop_size/2]).astype(np.float32)
+        coord_range = torch.tensor(coord_range)
+        calib_P2_np = np.array([
+            [7.215377e+02, 0.000000e+00, 6.095593e+02, 4.485728e+01], 
+            [0.000000e+00, 7.215377e+02, 1.728540e+02, 2.163791e-01], 
+            [0.000000e+00, 0.000000e+00, 1.000000e+00, 2.745884e-03],
+        ]) # 3 x 4
+        
+        # calib_P2_np = np.array([
+        #   [1394.6027293299926, 0.0, 995.588675691456, 4.485728e+01],
+        #   [0.0, 1394.6027293299926, 599.3212928484164, 2.163791e-01],
+        #   [0.0, 0.0, 1.0, 2.745884e-03],
+        # ])
+        
+        calib = CustomCalibration({
+            'P2': calib_P2_np, # 3x4
+            'R0': np.eye(3,3), # 3x3
+            'Tr_velo2cam': np.eye(3,4), # 3x4
+        })
+
+        calib_P2 = torch.tensor(calib_P2_np)
+        
+        transform = transforms.ToTensor()
+
+        # vid_url = "/home/aditya/Videos/Philadelphia.mp4"
+        vid_url = "/home/aditya/Datasets/hadar_car/2023-02-08_15:42:33.822505/rgb_2.mp4"
+
+        cap = cv2.VideoCapture(vid_url)
+        ret, frame = cap.read()
+
+        color_gt     = (153,255,51)#(0, 255 , 0)
+        box_class_list= ["car", "cyclist", "pedestrian"]
+        use_classwise_color = True
+
+        img_size_res = np.array(frame.size)
+        resolution = np.array([1280, 384])
+        downsample = 4
+        features_size = resolution // downsample
+        cls_mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
+            [1.52563191462 ,1.62856739989, 3.88311640418],
+            [1.73698127    ,0.59706367   , 1.76282397   ]])
+
 #================================================================
 # Main starts here
 #================================================================
@@ -136,7 +262,7 @@ def main():
         unzip_file(WEIGHTS_ZIP_PATH, CACHE_PATH, WEIGHTS_ZIP_FOLDER_NAME)
     
     cfg = yaml.load(open(CONFIG_PATH, 'r'), Loader=yaml.Loader)
-    mean_size = mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
+    mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
                                        [1.52563191462 ,1.62856739989, 3.88311640418],
                                        [1.73698127    ,0.59706367   , 1.76282397   ]])
 
@@ -197,6 +323,14 @@ def main():
     box_class_list= ["car", "cyclist", "pedestrian"]
     use_classwise_color = True
 
+    img_size_res = np.array(frame.size)
+    resolution = np.array([1280, 384])
+    downsample = 4
+    features_size = resolution // downsample
+    cls_mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
+        [1.52563191462 ,1.62856739989, 3.88311640418],
+        [1.73698127    ,0.59706367   , 1.76282397   ]])
+
     while ret:
         # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame = cv2.resize(frame, img_size[:2])
@@ -215,43 +349,31 @@ def main():
         coord_range = coord_range.to(dtype=torch.float32, device=device)
         calib_P2 = calib_P2.to(dtype=torch.float32, device=device)
 
-        # img_tensor = convert_to_tensor(frame, normalize= False).squeeze()
         outputs = model(img_tensor, coord_range, calib_P2, K=50, mode='test')
 
 
         dets = extract_dets_from_outputs(outputs=outputs, K=50)
         dets = dets.detach().cpu().numpy()
-
-
-        # get corresponding calibs & transform tensor to numpy
-        img_size_res = np.array(frame.size)
-        resolution = np.array([1280, 384])
-        downsample = 4
-        features_size = resolution // downsample
-        cls_mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
-            [1.52563191462 ,1.62856739989, 3.88311640418],
-            [1.73698127    ,0.59706367   , 1.76282397   ]])
         
         info = {
             'img_id': list(range(dets.shape[0])),
             'bbox_downsample_ratio': np.array([img_size[:2]/features_size,]),
         }
         calibs = [calib  for index in info['img_id']]
-        # info = {key: val.detach().cpu().numpy() for key, val in info.items()}
         dets = decode_detections(dets = dets,
                                     info = info,
                                     calibs = calibs,
                                     cls_mean_size=cls_mean_size,
                                     threshold = cfg['tester']['threshold'])
 
-        # preds = np.array([dets[0], ])
+        
         preds = np.array(dets[0])
-        # print(preds.shape)
-        # print(preds)
-        plot_boxes_on_image_and_in_bev(preds, img=frame, p2=calib_P2_np, plot_color= color_gt, box_class_list= box_class_list, use_classwise_color= use_classwise_color, show_3d= True)
-        # plot_boxes_on_image_and_in_bev(img_tensor.cpu().detach().numpy(), plot_color= color_gt, box_class_list= box_class_list, use_classwise_color= use_classwise_color, show_3d= True)
+        canvas_bev = np.zeros((640,480,3), dtype=np.uint8)
+        
+        plot_boxes_on_image_and_in_bev(preds, canvas_bev=canvas_bev, img=frame, p2=calib_P2_np, plot_color= color_gt, box_class_list= box_class_list, use_classwise_color= use_classwise_color, show_3d= True)
         
         cv2.imshow('input', frame)
+        cv2.imshow('bev', canvas_bev)
 
         if cv2.waitKey(1) == ord('q'):
             break
