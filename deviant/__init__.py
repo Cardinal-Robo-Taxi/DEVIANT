@@ -13,7 +13,7 @@ from deviant.test.test_ses_basis_orthogonality import convert_to_tensor
 from deviant.lib.helpers.decode_helper import extract_dets_from_outputs, decode_detections
 from deviant.lib.datasets.kitti_utils import Calibration
 from deviant.lib.helpers.util import project_3d, draw_3d_box, draw_bev
-
+from torch import nn
 
 CACHE_PATH = os.path.expanduser("~/.deviant")
 # CONFIG_PATH = os.path.join(CACHE_PATH, 'config_run_201_a100_v0_1.yaml')
@@ -117,15 +117,14 @@ def plot_boxes_on_image_and_in_bev(predictions_img, img, canvas_bev, plot_color,
 
 def get_default_cfg():
     return {
-        'random_seed': 444,
+        'random_seed': 111,
         'dataset': {
             'type': 'kitti',
             'root_dir': 'data/',
-            'train_split_name': 'train',
-            'val_split_name': 'val',
-            'resolution': [1280,384],
-            'eval_dataset': 'kitti',
             'batch_size': 12,
+            'resolution': [1280, 384],
+            'train_split_name': 'trainval',
+            'val_split_name': 'test',
             'class_merging': False,
             'use_dontcare': False,
             'use_3d_center': True,
@@ -138,7 +137,13 @@ def get_default_cfg():
         'model': {
             'type': 'gupnet',
             'backbone': 'dla34',
-            'neck': 'DLAUp'
+            'neck': 'DLAUp',
+            'use_conv': 'sesn',
+            'replace_style': 'max_scale_after_dla34_layer',
+            'sesn_norm_per_scale': False,
+            'sesn_rescale_basis': False,
+            'sesn_scales': [0.83, 0.9, 1.0],
+            'scale_index_for_init': 0
         },
         'optimizer': {
             'type': 'adam',
@@ -152,15 +157,15 @@ def get_default_cfg():
         },
         'trainer': {
             'max_epoch': 140,
-            'eval_frequency': 20,
+            'eval_frequency': 140,
             'save_frequency': 20,
             'disp_frequency': 20,
-            'log_dir': 'output'
+            'log_dir': 'output/'
         },
-        'tester': {'threshold': 0.15}
+        'tester': {'threshold': 0.05}
     }
 
-class Deviant:
+class Deviant(nn.Module):
 
     def __init__(self,
             cfg = get_default_cfg(),
@@ -169,149 +174,129 @@ class Deviant:
                 [0.000000e+00, 7.215377e+02, 1.728540e+02, 2.163791e-01], 
                 [0.000000e+00, 0.000000e+00, 1.000000e+00, 2.745884e-03],
             ]),
+            mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
+                [1.52563191462 ,1.62856739989, 3.88311640418],
+                [1.73698127    ,0.59706367   , 1.76282397   ]]),
             device=device
         ):
-        mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
-                                       [1.52563191462 ,1.62856739989, 3.88311640418],
-                                       [1.73698127    ,0.59706367   , 1.76282397   ]])
-
+        super().__init__()
         
+        os.makedirs(CACHE_PATH, exist_ok=True)
+
+        if not os.path.exists(CONFIG_PATH):
+            # Download config
+            print("Downloading configs")
+            download_file(CONFIG_DOWNLOAD, CONFIG_PATH)
+
+        if not os.path.exists(WEIGHTS_ZIP_PATH):
+            # Download config
+            print("Downloading weights")
+            # download_file(WEIGHTS_DOWNLOAD, WEIGHTS_ZIP_PATH)
+            gdown.download(WEIGHTS_DOWNLOAD, WEIGHTS_ZIP_PATH, quiet=False)
+
+
+        if not os.path.exists(WEIGHTS_FOLDER_PATH):
+            # Download config
+            print("Unzipping weights")
+            unzip_file(WEIGHTS_ZIP_PATH, CACHE_PATH, WEIGHTS_ZIP_FOLDER_NAME)
+
+        self.cfg = cfg
+        self.mean_size = mean_size
         self.model = GUPNet(
-            backbone=cfg['model']['backbone'],
-            neck=cfg['model']['neck'], 
-            mean_size=mean_size, 
-            cfg=cfg
+            backbone=self.cfg['model']['backbone'],
+            neck=self.cfg['model']['neck'], 
+            mean_size=self.mean_size, 
+            cfg=self.cfg
         )
 
-        checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+        self.device = device
+        checkpoint = torch.load(CHECKPOINT_PATH, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state'])
 
-        self.model = self.model.to(device=device)
+        self.model = self.model.to(device=self.device)
 
-        scale = cfg['dataset']['scale']
-        shift = cfg['dataset']['shift']
-        img_size = np.array(list(cfg['dataset']['resolution']) + [3,])
+        self.scale = self.cfg['dataset']['scale']
+        self.shift = self.cfg['dataset']['shift']
+        self.img_size = np.array(list(self.cfg['dataset']['resolution']) + [3,])
 
-        center = np.array(img_size) / 2
-        crop_size = img_size
+        self.center = np.array(self.img_size) / 2
+        self.crop_size = self.img_size
+        self.coord_range = np.array([self.center-self.crop_size/2,self.center+self.crop_size/2]).astype(np.float32)
+        self.coord_range = torch.tensor(self.coord_range)
+        self.calib_P2_np = P2 # 3 x 4
         
-        coord_range = np.array([center-crop_size/2,center+crop_size/2]).astype(np.float32)
-        coord_range = torch.tensor(coord_range)
-        calib_P2_np = np.array([
-            [7.215377e+02, 0.000000e+00, 6.095593e+02, 4.485728e+01], 
-            [0.000000e+00, 7.215377e+02, 1.728540e+02, 2.163791e-01], 
-            [0.000000e+00, 0.000000e+00, 1.000000e+00, 2.745884e-03],
-        ]) # 3 x 4
-        
-        # calib_P2_np = np.array([
-        #   [1394.6027293299926, 0.0, 995.588675691456, 4.485728e+01],
-        #   [0.0, 1394.6027293299926, 599.3212928484164, 2.163791e-01],
-        #   [0.0, 0.0, 1.0, 2.745884e-03],
-        # ])
-        
-        calib = CustomCalibration({
-            'P2': calib_P2_np, # 3x4
+        self.calib = CustomCalibration({
+            'P2': self.calib_P2_np, # 3x4
             'R0': np.eye(3,3), # 3x3
             'Tr_velo2cam': np.eye(3,4), # 3x4
         })
 
-        calib_P2 = torch.tensor(calib_P2_np)
+        self.calib_P2 = torch.tensor(self.calib_P2_np)
         
-        transform = transforms.ToTensor()
+        self.transform = transforms.ToTensor()
 
-        # vid_url = "/home/aditya/Videos/Philadelphia.mp4"
-        vid_url = "/home/aditya/Datasets/hadar_car/2023-02-08_15:42:33.822505/rgb_2.mp4"
+        self.color_gt     = (153, 255, 51) # (0, 255 , 0)
+        self.box_class_list = ["car", "cyclist", "pedestrian"]
+        self.use_classwise_color = True
 
-        cap = cv2.VideoCapture(vid_url)
-        ret, frame = cap.read()
+        self.resolution = np.array(self.cfg['dataset']['resolution'])
+        self.downsample = 4
+        self.features_size = self.resolution // self.downsample
+        self.cls_mean_size = np.array([
+            [1.76255119    , 0.66068622   , 0.84422524    ],
+            [1.52563191462 , 1.62856739989, 3.88311640418 ],
+            [1.73698127    , 0.59706367   , 1.76282397    ]
+        ])
 
-        color_gt     = (153,255,51)#(0, 255 , 0)
-        box_class_list= ["car", "cyclist", "pedestrian"]
-        use_classwise_color = True
+        if len(self.coord_range.shape)==2:
+            self.coord_range = self.coord_range.unsqueeze(0)
+        if len(self.calib_P2.shape)==2:
+            self.calib_P2 = self.calib_P2.unsqueeze(0)
+        
+        self.coord_range = self.coord_range.to(dtype=torch.float32, device=self.device)
+        self.calib_P2 = self.calib_P2.to(dtype=torch.float32, device=self.device)
 
-        img_size_res = np.array(frame.size)
-        resolution = np.array([1280, 384])
-        downsample = 4
-        features_size = resolution // downsample
-        cls_mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
-            [1.52563191462 ,1.62856739989, 3.88311640418],
-            [1.73698127    ,0.59706367   , 1.76282397   ]])
+    
+    def forward(self, frame):
+        frame = cv2.resize(frame, self.img_size[:2])
+        img_tensor = self.transform(frame)
+
+        if len(img_tensor.shape)==3:
+            img_tensor = img_tensor.unsqueeze(0)
+        
+
+        img_tensor = img_tensor.to(dtype=torch.float32, device=self.device)
+        
+        outputs = self.model(img_tensor, self.coord_range, self.calib_P2, K=50, mode='test')
+
+        dets = extract_dets_from_outputs(outputs=outputs, K=50)
+        dets = dets.detach().cpu().numpy()
+        
+        info = {
+            'img_id': list(range(dets.shape[0])),
+            'bbox_downsample_ratio': np.array([self.img_size[:2] / self.features_size,]),
+        }
+        calibs = [self.calib  for index in info['img_id']]
+        dets = decode_detections(dets = dets,
+                                    info = info,
+                                    calibs = calibs,
+                                    cls_mean_size=self.cls_mean_size,
+                                    threshold = self.cfg['tester']['threshold'])
+
+        
+        preds = np.array(dets[0])
+        canvas_bev = np.zeros((640,480,3), dtype=np.uint8)
+
+        return dets[0]
+
 
 #================================================================
 # Main starts here
 #================================================================
 
 def main():
-    os.makedirs(CACHE_PATH, exist_ok=True)
-    
-    if not os.path.exists(CONFIG_PATH):
-        # Download config
-        print("Downloading configs")
-        download_file(CONFIG_DOWNLOAD, CONFIG_PATH)
 
-    if not os.path.exists(WEIGHTS_ZIP_PATH):
-        # Download config
-        print("Downloading weights")
-        # download_file(WEIGHTS_DOWNLOAD, WEIGHTS_ZIP_PATH)
-        gdown.download(WEIGHTS_DOWNLOAD, WEIGHTS_ZIP_PATH, quiet=False)
-
-
-    if not os.path.exists(WEIGHTS_FOLDER_PATH):
-        # Download config
-        print("Unzipping weights")
-        unzip_file(WEIGHTS_ZIP_PATH, CACHE_PATH, WEIGHTS_ZIP_FOLDER_NAME)
-    
-    cfg = yaml.load(open(CONFIG_PATH, 'r'), Loader=yaml.Loader)
-    mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
-                                       [1.52563191462 ,1.62856739989, 3.88311640418],
-                                       [1.73698127    ,0.59706367   , 1.76282397   ]])
-
-    model = GUPNet(
-        backbone=cfg['model']['backbone'],
-        neck=cfg['model']['neck'], 
-        mean_size=mean_size, 
-        cfg=cfg
-    )
-
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-    model.load_state_dict(checkpoint['model_state'])
-
-    model = model.to(device=device)
-
-    scale = cfg['dataset']['scale']
-    shift = cfg['dataset']['shift']
-    img_size = np.array(list(cfg['dataset']['resolution']) + [3,])
-    # img_size = np.array(list(cfg['dataset']['resolution']))
-    center = np.array(img_size) / 2
-    crop_size = img_size
-    
-    # crop_size = img_size * np.clip(np.random.randn()*scale + 1, 1 - scale, 1 + scale)
-    # center[0] += img_size[0] * np.clip(np.random.randn() * shift, -2 * shift, 2 * shift)
-    # center[1] += img_size[1] * np.clip(np.random.randn() * shift, -2 * shift, 2 * shift)
-    coord_range = np.array([center-crop_size/2,center+crop_size/2]).astype(np.float32)
-    coord_range = torch.tensor(coord_range)
-    print('coord_range.shape', coord_range.shape)
-    calib_P2_np = np.array([
-        [7.215377e+02, 0.000000e+00, 6.095593e+02, 4.485728e+01], 
-        [0.000000e+00, 7.215377e+02, 1.728540e+02, 2.163791e-01], 
-        [0.000000e+00, 0.000000e+00, 1.000000e+00, 2.745884e-03],
-    ]) # 3 x 4
-    
-    # calib_P2_np = np.array([
-    #   [1394.6027293299926, 0.0, 995.588675691456, 4.485728e+01],
-    #   [0.0, 1394.6027293299926, 599.3212928484164, 2.163791e-01],
-    #   [0.0, 0.0, 1.0, 2.745884e-03],
-    # ])
-    
-    calib = CustomCalibration({
-        'P2': calib_P2_np, # 3x4
-        'R0': np.eye(3,3), # 3x3
-        'Tr_velo2cam': np.eye(3,4), # 3x4
-    })
-
-    calib_P2 = torch.tensor(calib_P2_np)
-    
-    transform = transforms.ToTensor()
+    dev = Deviant()
 
     vid_url = "/home/aditya/Videos/Philadelphia.mp4"
     # vid_url = "/home/aditya/Datasets/hadar_car/2023-02-08_15:42:33.822505/rgb_2.mp4"
@@ -319,67 +304,26 @@ def main():
     cap = cv2.VideoCapture(vid_url)
     ret, frame = cap.read()
 
-    color_gt     = (153,255,51)#(0, 255 , 0)
-    box_class_list= ["car", "cyclist", "pedestrian"]
-    use_classwise_color = True
-
-    img_size_res = np.array(frame.size)
-    resolution = np.array([1280, 384])
-    downsample = 4
-    features_size = resolution // downsample
-    cls_mean_size = np.array([[1.76255119    ,0.66068622   , 0.84422524   ],
-        [1.52563191462 ,1.62856739989, 3.88311640418],
-        [1.73698127    ,0.59706367   , 1.76282397   ]])
 
     while ret:
-        # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        frame = cv2.resize(frame, img_size[:2])
-        # Convert the image to PyTorch tensor
-        img_tensor = transform(frame)
-        if len(img_tensor.shape)==3:
-            img_tensor = img_tensor.unsqueeze(0)
-        if len(coord_range.shape)==2:
-            coord_range = coord_range.unsqueeze(0)
-        if len(calib_P2.shape)==2:
-            calib_P2 = calib_P2.unsqueeze(0)
         
-        print(img_tensor.shape)
+        det = dev(frame)
 
-        img_tensor = img_tensor.to(dtype=torch.float32, device=device)
-        coord_range = coord_range.to(dtype=torch.float32, device=device)
-        calib_P2 = calib_P2.to(dtype=torch.float32, device=device)
-
-        outputs = model(img_tensor, coord_range, calib_P2, K=50, mode='test')
-
-
-        dets = extract_dets_from_outputs(outputs=outputs, K=50)
-        dets = dets.detach().cpu().numpy()
-        
-        info = {
-            'img_id': list(range(dets.shape[0])),
-            'bbox_downsample_ratio': np.array([img_size[:2]/features_size,]),
-        }
-        calibs = [calib  for index in info['img_id']]
-        dets = decode_detections(dets = dets,
-                                    info = info,
-                                    calibs = calibs,
-                                    cls_mean_size=cls_mean_size,
-                                    threshold = cfg['tester']['threshold'])
-
-        
-        preds = np.array(dets[0])
+        preds = np.array(det)
         canvas_bev = np.zeros((640,480,3), dtype=np.uint8)
+
+        frame_st = cv2.resize(frame, dev.img_size[:2])
         
-        plot_boxes_on_image_and_in_bev(preds, canvas_bev=canvas_bev, img=frame, p2=calib_P2_np, plot_color= color_gt, box_class_list= box_class_list, use_classwise_color= use_classwise_color, show_3d= True)
         
-        cv2.imshow('input', frame)
+        plot_boxes_on_image_and_in_bev(preds, canvas_bev=canvas_bev, img=frame_st, p2=dev.calib_P2_np, plot_color= dev.color_gt, box_class_list= dev.box_class_list, use_classwise_color= dev.use_classwise_color, show_3d= True)
+        
+        cv2.imshow('input', frame_st)
         cv2.imshow('bev', canvas_bev)
 
         if cv2.waitKey(1) == ord('q'):
             break
         for i in range(10):
             ret, frame = cap.read()
-
 
         
 
