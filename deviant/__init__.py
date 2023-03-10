@@ -15,10 +15,10 @@ from deviant.lib.datasets.kitti_utils import Calibration
 from deviant.lib.helpers.util import project_3d, draw_3d_box, draw_bev
 from torch import nn
 
+# TODO: Add support for multiple models?
+
 CACHE_PATH = os.path.expanduser("~/.deviant")
-# CONFIG_PATH = os.path.join(CACHE_PATH, 'config_run_201_a100_v0_1.yaml')
 CONFIG_PATH = os.path.join(CACHE_PATH, 'run_250.yaml')
-# WEIGHTS_ZIP_FOLDER_NAME = 'config_run_201_a100_v0_1'
 WEIGHTS_ZIP_FOLDER_NAME = 'run_250'
 WEIGHTS_ZIP_FILE_NAME = WEIGHTS_ZIP_FOLDER_NAME + '.zip'
 WEIGHTS_ZIP_PATH = os.path.join(CACHE_PATH, WEIGHTS_ZIP_FILE_NAME)
@@ -257,17 +257,25 @@ class Deviant(nn.Module):
         self.calib_P2 = self.calib_P2.to(dtype=torch.float32, device=self.device)
 
     
-    def forward(self, frame):
-        frame = cv2.resize(frame, self.img_size[:2])
-        img_tensor = self.transform(frame)
+    def forward(self, frame_list):
+        frame_tensors = []
+        for frame in frame_list:
+            frame = cv2.resize(frame, self.img_size[:2])
+            img_tensor = self.transform(frame)
 
-        if len(img_tensor.shape)==3:
-            img_tensor = img_tensor.unsqueeze(0)
+            if len(img_tensor.shape)==3:
+                img_tensor = img_tensor.unsqueeze(0)
+            
+            img_tensor = img_tensor.to(dtype=torch.float32, device=self.device)
+            frame_tensors.append(img_tensor)
         
+        frame_tensors = torch.cat(frame_tensors, dim=0)
 
-        img_tensor = img_tensor.to(dtype=torch.float32, device=self.device)
-        
-        outputs = self.model(img_tensor, self.coord_range, self.calib_P2, K=50, mode='test')
+        print('frame_tensors.shape', frame_tensors.shape)
+        print('img_tensor.shape', img_tensor.shape)
+        # exit()
+
+        outputs = self.model(frame_tensors, self.coord_range, self.calib_P2, K=50, mode='test')
 
         dets = extract_dets_from_outputs(outputs=outputs, K=50)
         dets = dets.detach().cpu().numpy()
@@ -284,10 +292,7 @@ class Deviant(nn.Module):
                                     threshold = self.cfg['tester']['threshold'])
 
         
-        preds = np.array(dets[0])
-        canvas_bev = np.zeros((640,480,3), dtype=np.uint8)
-
-        return dets[0]
+        return dets
 
 
 #================================================================
@@ -307,18 +312,24 @@ def main():
 
     while ret:
         
-        det = dev(frame)
+        dets = dev([frame, frame])
+        # dets = dev([frame, ])
 
-        preds = np.array(det)
-        canvas_bev = np.zeros((640,480,3), dtype=np.uint8)
+        print(dets.keys())
+        exit()
 
-        frame_st = cv2.resize(frame, dev.img_size[:2])
-        
-        
-        plot_boxes_on_image_and_in_bev(preds, canvas_bev=canvas_bev, img=frame_st, p2=dev.calib_P2_np, plot_color= dev.color_gt, box_class_list= dev.box_class_list, use_classwise_color= dev.use_classwise_color, show_3d= True)
-        
-        cv2.imshow('input', frame_st)
-        cv2.imshow('bev', canvas_bev)
+        for index, det_id in enumerate(dets):
+            det = dets[det_id]
+            preds = np.array(det)
+            canvas_bev = np.zeros((640,480,3), dtype=np.uint8)
+
+            frame_st = cv2.resize(frame, dev.img_size[:2])
+            
+            
+            plot_boxes_on_image_and_in_bev(preds, canvas_bev=canvas_bev, img=frame_st, p2=dev.calib_P2_np, plot_color= dev.color_gt, box_class_list= dev.box_class_list, use_classwise_color= dev.use_classwise_color, show_3d= True)
+            
+            cv2.imshow('input_' + str(index), frame_st)
+            cv2.imshow('bev_'+ str(index), canvas_bev)
 
         if cv2.waitKey(1) == ord('q'):
             break

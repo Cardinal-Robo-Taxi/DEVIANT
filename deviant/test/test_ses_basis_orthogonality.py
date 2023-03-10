@@ -12,8 +12,8 @@ import torch.nn as nn
 np.set_printoptions   (precision= 4, suppress= True)
 torch.set_printoptions(precision= 4)
 
-from plot.common_operations import *
-import plot.plotting_params as params
+from deviant.plot.common_operations import *
+import deviant.plot.plotting_params as params
 import matplotlib
 import cv2
 import torch.nn.functional as F
