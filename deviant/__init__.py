@@ -315,8 +315,8 @@ def main():
         dets = dev([frame, frame])
         # dets = dev([frame, ])
 
-        print(dets.keys())
-        exit()
+        # print(dets.keys())
+        # exit()
 
         for index, det_id in enumerate(dets):
             det = dets[det_id]
